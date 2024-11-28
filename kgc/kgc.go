@@ -1,149 +1,167 @@
 package kgc
 
 import (
-	_ "bytes"
-	_ "crypto/ecdsa"
-	_ "crypto/elliptic"
 	"crypto/rand"
-	_ "crypto/sha256"
-	_"encoding/base64"
 	"encoding/binary"
-	_ "encoding/binary"
 	"fmt"
 	"math/big"
-
 	"github.com/emmansun/gmsm/sm2"
 	"github.com/emmansun/gmsm/sm3"
+	"github.com/BurntSushi/toml"
+	"os"
+	"path/filepath"
+	"github.com/OpenNHP/opennhp/kgc/user"
 )
 
-// GenerateUserKeyPairSM2,Generate user private key dA_ and public key UA based on SM2
-func GenerateUserKeyPairSM2() (*big.Int, *big.Int, *big.Int, error) {
-	// Using the SM2 Curve
-	curve := sm2.P256()
-	// Randomly generate user private key dA_, the range is [1, n-1]
-	dA_, err := rand.Int(rand.Reader, curve.Params().N)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Failed to generate user private key dA_: %v", err)
-	}
+var(
+	id = user.ID
+	curve = sm2.P256()
+	N = curve.Params().N
+	Gx = curve.Params().Gx
+	Gy = curve.Params().Gy
+	IdA = []byte(id)
+	EntlA = len(IdA) * 8
+	Ms *big.Int 
+	PpubX *big.Int 
+	PpubY *big.Int 
+	curveParams CurveParams
+	A, B *big.Int
+	WAx, WAy, W *big.Int
+	HA []byte
+	L *big.Int
+	TA *big.Int
+)
 
-	// Make sure dA_ is not 0
-	if dA_.Cmp(big.NewInt(0)) == 0 {
-		dA_, err = rand.Int(rand.Reader, curve.Params().N)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("Failed to regenerate user private key: %v", err)
-		}
-	}
-	// Use the curve base point G to calculate the user public key UA = [dA_]G
-	UAx, UAy := curve.ScalarBaseMult(dA_.Bytes())
-	return dA_, UAx, UAy, nil
+// A structure for storing configuration
+type CurveParams struct {
+    A string `toml:"a"`
+    B string `toml:"b"`
+}
+
+//InitConfig loads the configuration and initializes global variables
+func InitConfig() error {
+    // Get the current working directory path
+    wd, err := os.Getwd()
+    if err != nil {
+        return fmt.Errorf("error getting current directory: %v", err)
+    }
+
+   // Path to splice TOML files
+    tomlFilePath := filepath.Join(wd, "kgc", "main", "etc", "Curve.toml")
+
+   // Read and parse TOML files
+    _, err = toml.DecodeFile(tomlFilePath, &curveParams)
+    if err != nil {
+        return fmt.Errorf("error loading TOML file: %v", err)
+    }
+
+    // Convert a and b from strings in TOML file to big.Int type
+    A = new(big.Int)
+    A.SetString(curveParams.A, 16)
+    B = new(big.Int)
+    B.SetString(curveParams.B, 16)
+    return nil
+}
+
+func GetA() *big.Int {
+    return A
+}
+
+func GetB() *big.Int {
+    return B
 }
 
 // GenerateMasterKeyPairSM2,Generate the system's master private key ms and master public key Ppub
-func GenerateMasterKeyPairSM2() (*big.Int, *big.Int, *big.Int, error) {
-	// Using the SM2 Curve
+func GenerateMasterKeyPairSM2() (*big.Int, *big.Int, error) {
 	curve := sm2.P256()
-
-	// Generate the system master private key ms, the range is [1, n-1]
 	ms, err := rand.Int(rand.Reader, curve.Params().N)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Failed to generate system master private key ms: %v", err)
+		return nil, nil, fmt.Errorf("failed to generate system master private key ms: %v", err)
 	}
-
-	// Make sure ms is not 0
 	if ms.Cmp(big.NewInt(0)) == 0 {
 		ms, err = rand.Int(rand.Reader, curve.Params().N)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("Regeneration of system master private key ms failed: %v", err)
+			return nil, nil, fmt.Errorf("regeneration of system master private key ms failed: %v", err)
 		}
 	}
-	// Use the curve base point G to calculate the system master public key Ppub = [ms]G
-	PpubX, PpubY := curve.ScalarBaseMult(ms.Bytes())
-	return ms, PpubX, PpubY, nil
+	Ppubx, Ppuby := curve.ScalarBaseMult(ms.Bytes())
+	Ms = ms
+	PpubX = Ppubx
+	PpubY = Ppuby
+	return Ppubx, Ppuby, nil
 }
 
 // GenerateWA,Calculate WA = [w]G + UA
 func GenerateWA(UAx, UAy *big.Int) (*big.Int, *big.Int, *big.Int, error) {
-	// Using the SM2 curve
 	curve := sm2.P256()
-
 	// Generate a random number w in the range [1, n-1]
 	w, err := rand.Int(rand.Reader, curve.Params().N)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Failed to generate random number w: %v", err)
+		return nil, nil, nil, fmt.Errorf("failed to generate random number w: %v", err)
 	}
 
 	// Make sure w is not 0
 	if w.Cmp(big.NewInt(0)) == 0 {
 		w, err = rand.Int(rand.Reader, curve.Params().N)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("Failed to regenerate random number w: %v", err)
+			return nil, nil, nil, fmt.Errorf("failed to regenerate random number w: %v", err)
 		}
 	}
 	Wx, Wy := curve.ScalarBaseMult(w.Bytes())
-	//fmt.Printf("wx=%x, wy=%x\n", Wx, Wy)
-	WAx, WAy := curve.Add(Wx, Wy, UAx, UAy)
+	wAx, wAy := curve.Add(Wx, Wy, UAx, UAy)
+	WAx = wAx
+	WAy = wAy
+	W = w
 	return WAx, WAy, w, nil
 }
 
-func CalculateHA(entlA int, idA []byte, a, b, xG, yG, xPub, yPub *big.Int) []byte {
-	// Convert entlA to a 2-byte bit string
+// Calculate HA = H256(entlA || idA || a || b || xG || yG || xPub || yPub)
+func CalculateHA(entlA int, idA []byte, a, b, xG, yG, xPub, yPub *big.Int) ([]byte,error) {
+	if a == nil || b == nil || xG == nil || yG == nil || xPub == nil || yPub == nil {
+		return nil, fmt.Errorf("one or more big.Int parameters passed in were nil")
+	}
 	entlABytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(entlABytes, uint16(entlA))
-	// Concatenate all parameters
-	data := append(entlABytes, idA...) 
-	data = append(data, a.Bytes()...) 
-	data = append(data, b.Bytes()...) 
-	data = append(data, xG.Bytes()...) 
-	data = append(data, yG.Bytes()...) 
-	data = append(data, xPub.Bytes()...) 
-	data = append(data, yPub.Bytes()...) 
-	// Calculating SM3 hash value
+	data := append(entlABytes, idA...)
+	data = append(data, a.Bytes()...)
+	data = append(data, b.Bytes()...)
+	data = append(data, xG.Bytes()...)
+	data = append(data, yG.Bytes()...)
+	data = append(data, xPub.Bytes()...)
+	data = append(data, yPub.Bytes()...)
 	hash := sm3.New()
 	hash.Write(data)
-	HA := hash.Sum(nil)
-	return HA
+	ha := hash.Sum(nil)
+	HA = ha
+	return HA,nil
 }
 
 // ComputeL  l = H256(xWA‖yWA‖HA) mod n
 func ComputeL(xWA, yWA *big.Int, HA []byte, n *big.Int) (*big.Int, error) {
-	//  Convert the coordinates of WA to a bit string
 	xBits := intToBitString(xWA)
 	yBits := intToBitString(yWA)
-	//  Concatenating bit strings and HA
 	hashData := append(xBits, yBits...)
 	hashData = append(hashData, HA...)
-	//  Calculating hashes using SM3
 	hash := sm3.Sum(hashData)
-	// Convert the hash value to a big.Int
-	l := new(big.Int).SetBytes(hash[:]) 
-	l.Mod(l, n)
+	l := new(big.Int).SetBytes(hash[:])
+	l.Mod(l, n)  
 	if l.Cmp(big.NewInt(0)) < 0 {
-		return nil, fmt.Errorf("The calculated result l is a negative number")
+		return nil, fmt.Errorf("the calculated result l is a negative number")
 	}
-
-	//  Convert l to a byte string
-	k := (n.BitLen() + 7) / 8 
+	k := (n.BitLen() + 7) / 8
 	lBytes := intToBytes(l, k)
-
-	// Convert l to an integer, ensuring compliance with the standard
 	lInteger := new(big.Int).SetBytes(lBytes)
-
-	return lInteger, nil
+	L = lInteger
+	return L, nil
 }
 
 // intToBitString 
 func intToBitString(x *big.Int) []byte {
-
 	bitLen := x.BitLen()
-	
 	byteLen := (bitLen + 7) / 8
-	
 	bitString := make([]byte, byteLen)
-	
 	xBytes := x.Bytes()
-	
 	copy(bitString[byteLen-len(xBytes):], xBytes)
-
 	return bitString
 }
 
@@ -155,41 +173,21 @@ func intToBytes(x *big.Int, k int) []byte {
 	return m
 }
 
-// 计算 tA
+
+//Calculate tA= w + (l * ms)
 func ComputeTA(w, lInteger, ms, n *big.Int) *big.Int {
-	tA := new(big.Int).Set(w) 
-	lMod := new(big.Int).Mod(lInteger, n) 
-	msMod := new(big.Int).Mod(ms, n)      
-	lMulMs := new(big.Int).Mul(lMod, msMod) 
-	lMulMs.Mod(lMulMs, n) 
-	tA.Add(tA, lMulMs) // tA = w + (l * ms)
-	tA.Mod(tA, n)      // tA = (w + (l * ms)) mod n
-	return tA
+	tA := new(big.Int).Set(w)
+	lMod := new(big.Int).Mod(lInteger, n)
+	msMod := new(big.Int).Mod(ms, n)
+	lMulMs := new(big.Int).Mul(lMod, msMod)
+	lMulMs.Mod(lMulMs, n)
+	tA.Add(tA, lMulMs)
+	tA.Mod(tA, n)
+	TA = tA
+	return TA
 }
 
-// 计算 dA
-func ComputeDA(tA, dA_ *big.Int, n *big.Int) *big.Int {
-	dA := new(big.Int).Set(tA)      
-	dA.Add(dA, dA_)                
-	dA.Mod(dA, n)                 
-	return dA
-}
 
-// Calculate PA = WA + [l]Ppub
-func ComputePA(WAx, WAy, PpubX, PpubY *big.Int, lInteger *big.Int) (*big.Int, *big.Int) {
-	curve := sm2.P256()
-	PpubXl, PpubYl := curve.ScalarMult(PpubX, PpubY, lInteger.Bytes())
-	//fmt.Printf("PpubXl=%x, PpubYl=%x\n", PpubXl, PpubYl)
-	PAx, PAy := curve.Add(WAx, WAy, PpubXl, PpubYl)
-	return PAx, PAy
-}
-
-// Calculate P'A = [dA]G
-func ComputePAPrime(dA *big.Int) (*big.Int, *big.Int) {
-	curve := sm2.P256()
-	PAX_, PAY_ := curve.ScalarBaseMult(dA.Bytes())
-	return PAX_, PAY_
-}
 
 
 
